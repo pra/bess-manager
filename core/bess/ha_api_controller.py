@@ -310,6 +310,13 @@ class HomeAssistantAPIController:
             "precision": 0,
             "conversion_threshold": None,
         },
+        "get_battery_first_priority_active": {
+            "sensor_key": "battery_first_priority",
+            "name": "Battery-First Solar Priority",
+            "unit": "binary",
+            "precision": 0,
+            "conversion_threshold": None,
+        },
     }
 
     # ── Entity Discovery Architecture ─────────────────────────────────────
@@ -1079,6 +1086,20 @@ class HomeAssistantAPIController:
         if not self.sensors.get("discharge_inhibit"):
             return False
         result = self._get_binary_state("discharge_inhibit")
+        return result is True
+
+    def get_battery_first_priority_active(self) -> bool:
+        """Check if battery-first solar priority mode is active.
+
+        Backed by a user-provided sensor expected to be slow-changing
+        (e.g. a seasonal input_boolean or calendar-based template) —
+        deliberately not derived from consumption or weather, so a
+        stochastic load spike cannot flip it. Returns False when not
+        configured or unavailable.
+        """
+        if not self.sensors.get("battery_first_priority"):
+            return False
+        result = self._get_binary_state("battery_first_priority")
         return result is True
 
     def get_estimated_consumption(self):

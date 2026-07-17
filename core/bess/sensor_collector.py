@@ -343,6 +343,7 @@ class SensorCollector:
             grid_exported=flow_dict.get("export_to_grid", 0.0),
             battery_soe_start=soe_start,
             battery_soe_end=soe_end,
+            battery_first_priority=self.ha_controller.get_battery_first_priority_active(),
         )
 
         logger.debug(

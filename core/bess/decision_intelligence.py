@@ -435,7 +435,8 @@ def classify_strategic_intent(power: float, energy_data: EnergyData) -> str:
         energy_data: Complete energy flow data for the period.
 
     Returns:
-        One of: GRID_CHARGING, SOLAR_STORAGE, LOAD_SUPPORT, BATTERY_EXPORT, SOLAR_EXPORT, IDLE.
+        One of: GRID_CHARGING, SOLAR_STORAGE, SOLAR_STORAGE_PRIORITY,
+        LOAD_SUPPORT, BATTERY_EXPORT, SOLAR_EXPORT, IDLE.
     """
     if power < -_POWER_THRESHOLD_KW:  # Discharging
         # Any meaningfully nonzero export (same 0.01 kWh noise floor used by
@@ -450,8 +451,16 @@ def classify_strategic_intent(power: float, energy_data: EnergyData) -> str:
     elif power > _POWER_THRESHOLD_KW:  # Charging
         if energy_data.grid_to_battery > 0.01:
             return "GRID_CHARGING"
+        # Under battery_first_priority, the battery can claim solar while
+        # home simultaneously imports from grid -- physically impossible
+        # under the default (home-first) physics, so grid_to_home > 0 here
+        # unambiguously signals the priority mode was active this period.
+        if energy_data.grid_to_home > 0.01:
+            return "SOLAR_STORAGE_PRIORITY"
         return "SOLAR_STORAGE"
     elif energy_data.battery_charged > 0.01:
+        if energy_data.grid_to_home > 0.01:
+            return "SOLAR_STORAGE_PRIORITY"
         return "SOLAR_STORAGE"
     elif energy_data.battery_discharged > 0.01:
         return "LOAD_SUPPORT"

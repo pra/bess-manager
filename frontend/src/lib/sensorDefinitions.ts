@@ -61,7 +61,7 @@ export interface PerPlatformSensors {
 /** IDs of non-inverter (shared) integrations. */
 export const SHARED_INTEGRATION_IDS = new Set([
   'nordpool', 'solar_forecast', 'consumption_forecast',
-  'phase_current', 'discharge_inhibit', 'weather',
+  'phase_current', 'discharge_inhibit', 'battery_first_priority', 'weather',
 ]);
 
 /** Create an empty per-platform sensors structure. */
@@ -416,6 +416,20 @@ export const INTEGRATIONS: IntegrationDef[] = [
         name: 'Constraint',
         sensors: [
           { key: 'discharge_inhibit', label: 'Discharge Inhibit Sensor', required: false },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'battery_first_priority',
+    name: 'Battery-First Solar Priority',
+    required: false,
+    description: 'Binary sensor (e.g. a seasonal input_boolean) that, when on, prioritizes routing solar into the battery ahead of home load \u2014 not auto-detected, enter the entity ID manually',
+    sensorGroups: [
+      {
+        name: 'Mode',
+        sensors: [
+          { key: 'battery_first_priority', label: 'Battery-First Priority Sensor', required: false },
         ],
       },
     ],

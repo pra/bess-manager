@@ -29,6 +29,7 @@ interface InverterStatus {
   chargePowerRate: number;
   dischargePowerRate: number;
   dischargeInhibitActive?: boolean;
+  batteryFirstPriorityActive?: boolean;
   maxChargingPower: number;
   maxDischargingPower: number;
   gridChargeEnabled: boolean;
@@ -117,7 +118,7 @@ interface StatusCardProps {
     icon?: React.ComponentType<{ className?: string }>;
     color?: 'green' | 'red' | 'yellow' | 'blue';
     dimmed?: boolean;
-    badge?: { text: string; color: 'yellow' | 'red' };
+    badge?: { text: string; color: 'yellow' | 'red' | 'green' };
   }>;
   color: 'blue' | 'green' | 'yellow' | 'red' | 'purple';
   icon: React.ComponentType<{ className?: string }>;
@@ -213,6 +214,8 @@ const StatusCard: React.FC<StatusCardProps> = ({
                 <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
                   metric.badge.color === 'yellow'
                     ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
+                    : metric.badge.color === 'green'
+                    ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
                     : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
                 }`}>
                   {metric.badge.text}
@@ -700,7 +703,10 @@ const InverterStatusDashboard: React.FC = () => {
               label: "Charge Power Rate",
               value: inverterStatus?.chargePowerRate || 0,
               unit: "%",
-              icon: TrendingUp
+              icon: TrendingUp,
+              badge: inverterStatus?.batteryFirstPriorityActive
+                ? { text: 'Battery-First Priority', color: 'green' as const }
+                : undefined,
             },
             {
               label: "Discharge Power Rate",

@@ -2024,6 +2024,7 @@ class BatterySystemManager:
                 max_charge_power_per_period=max_charge_power_per_period,
                 discharge_resolution_kw=discharge_resolution_kw,
                 self_throttle_export_threshold_kwh=self_throttle_export_threshold_kwh,
+                battery_first_priority=self.controller.get_battery_first_priority_active(),
             )
 
             # Add timestamps to period data (algorithm is time-agnostic, operates on relative indices)

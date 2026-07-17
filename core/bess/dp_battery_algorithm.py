@@ -187,6 +187,7 @@ def _state_transition(
     dt: float,
     solar_production: float,
     home_consumption: float,
+    battery_first_priority: bool = False,
 ) -> float:
     """
     Calculate the next state of energy based on current SOE and power action.
@@ -201,6 +202,13 @@ def _state_transition(
     battery up to capacity, clamped by the inverter's max charge rate. This models
     the economically correct baseline: free solar energy is more valuable stored
     for later use than exported at the (typically lower) sell price.
+
+    BATTERY-FIRST PRIORITY: when `battery_first_priority` is True, the IDLE
+    disposition's passive solar-to-battery claim is computed against total
+    solar production rather than the post-home surplus -- the battery gets
+    first claim on solar and home load draws from grid for any shortfall.
+    STORE's charge amount is unaffected either way (grid always tops up to
+    the same rate/room cap regardless of the solar/home split).
     """
     if power > POWER_TOLERANCE_KW:  # STORE disposition (+ optional grid charge)
         surplus = max(0.0, solar_production - home_consumption)
@@ -226,12 +234,15 @@ def _state_transition(
         next_soe = soe - actual_discharge
 
     else:  # IDLE — passive solar charging (mirrors load_first hardware behavior)
-        surplus = max(0.0, solar_production - home_consumption)
         room_throughput = (
             battery_settings.max_soe_kwh - soe
         ) / battery_settings.efficiency_charge
         rate_throughput = battery_settings.max_charge_power_kw * dt
-        solar_to_battery = min(surplus, rate_throughput, room_throughput)
+        if battery_first_priority:
+            solar_to_battery = min(solar_production, rate_throughput, room_throughput)
+        else:
+            surplus = max(0.0, solar_production - home_consumption)
+            solar_to_battery = min(surplus, rate_throughput, room_throughput)
         charge_energy = solar_to_battery * battery_settings.efficiency_charge
         next_soe = min(battery_settings.max_soe_kwh, soe + charge_energy)
 
@@ -250,6 +261,7 @@ def _state_transition_grid(
     dt: float,
     solar_production: float,
     home_consumption: float,
+    battery_first_priority: bool = False,
 ) -> np.ndarray:
     """Vectorized form of `_state_transition` for the DP backward pass.
 
@@ -259,6 +271,11 @@ def _state_transition_grid(
     operations, same order) so results are bit-identical per cell -- this
     is what lets `_run_dynamic_programming` vectorize without changing the
     DP's numerics. See #236.
+
+    `battery_first_priority` mirrors `_state_transition`'s IDLE-only
+    battery-first solar claim -- STORE's solar/grid split uses the
+    home-first `surplus` regardless (its total charge_energy is invariant
+    to the split either way, see `_state_transition`'s docstring).
     """
     max_soe = battery_settings.max_soe_kwh
     min_soe = battery_settings.min_soe_kwh
@@ -286,8 +303,15 @@ def _state_transition_grid(
     actual_discharge = np.minimum(discharge_energy, available_energy)
     discharge_next_soe = soe - actual_discharge
 
-    # IDLE -- passive solar charging only, no grid top-up
-    idle_charge_energy = solar_to_battery * eff_charge
+    # IDLE -- passive solar charging only, no grid top-up. Under
+    # battery_first_priority the battery claims solar ahead of home load.
+    if battery_first_priority:
+        idle_solar_to_battery = np.minimum(
+            np.minimum(solar_production, rate_throughput), room_throughput
+        )
+    else:
+        idle_solar_to_battery = solar_to_battery
+    idle_charge_energy = idle_solar_to_battery * eff_charge
     idle_next_soe = np.minimum(max_soe, soe + idle_charge_energy)
 
     next_soe = np.where(
@@ -419,6 +443,7 @@ def _compute_reward(
     solar_production: float,
     cost_basis: float,
     self_throttle_export_threshold_kwh: float = BATTERY_EXPORT_THRESHOLD_KWH,
+    battery_first_priority: bool = False,
 ) -> tuple[float, float]:
     """Hot-path reward computation — returns scalars only, no dataclass allocation.
 
@@ -469,12 +494,20 @@ def _compute_reward(
     new_cost_basis = cost_basis
 
     if power > POWER_TOLERANCE_KW:  # STORE disposition
-        surplus = max(0.0, solar_production - home_consumption)
         room_throughput = (
             battery_settings.max_soe_kwh - soe
         ) / battery_settings.efficiency_charge
         rate_throughput = battery_settings.max_charge_power_kw * dt
-        solar_to_battery = min(surplus, rate_throughput, room_throughput)
+        # Cost-basis attribution only (total energy_stored below is
+        # invariant to this split -- grid always tops up to the same
+        # rate/room cap either way, see _state_transition's docstring).
+        # Under battery_first_priority the battery's claim on solar isn't
+        # netted against home consumption first.
+        if battery_first_priority:
+            solar_to_battery = min(solar_production, rate_throughput, room_throughput)
+        else:
+            surplus = max(0.0, solar_production - home_consumption)
+            solar_to_battery = min(surplus, rate_throughput, room_throughput)
         remaining_rate = max(
             0.0, min(rate_throughput, room_throughput) - solar_to_battery
         )
@@ -485,9 +518,23 @@ def _compute_reward(
         ) * battery_settings.efficiency_charge
         battery_wear_cost = energy_stored * battery_settings.cycle_cost_per_kwh
 
-        # genuine excess solar (above rate/room) is exported; deliberate grid top-up imported
-        surplus_exported = max(0.0, surplus - solar_to_battery)
-        grid_imported = grid_to_battery + max(0.0, home_consumption - solar_production)
+        # Genuine excess solar (above rate/room, and — under
+        # battery_first_priority — above home's own need too) is exported;
+        # deliberate grid top-up imported. Total grid_imported/grid_exported
+        # are invariant to the priority split (grid always makes up whatever
+        # solar didn't cover, split only changes which of home/battery gets
+        # credited with which portion) -- this just attributes them
+        # correctly per mode for cost_basis/reporting purposes.
+        if battery_first_priority:
+            remaining_solar_for_home = max(0.0, solar_production - solar_to_battery)
+            solar_to_home = min(remaining_solar_for_home, home_consumption)
+            surplus_exported = max(0.0, remaining_solar_for_home - solar_to_home)
+            grid_imported = grid_to_battery + (home_consumption - solar_to_home)
+        else:
+            surplus_exported = max(0.0, surplus - solar_to_battery)
+            grid_imported = grid_to_battery + max(
+                0.0, home_consumption - solar_production
+            )
         grid_exported = surplus_exported
 
         solar_opportunity_cost = solar_to_battery * current_sell_price
@@ -554,11 +601,18 @@ def _build_period_data(
     solar_production: float,
     new_cost_basis: float,
     currency: str,
+    battery_first_priority: bool = False,
 ) -> PeriodData:
     """Build full PeriodData for the winning action of a DP cell.
 
     Called once per (t, i) cell after the inner power loop identifies the best action.
     Separated from _compute_reward to eliminate dataclass allocation in the hot path.
+
+    `battery_first_priority` is passed straight through to `EnergyData` --
+    it only affects how EnergyData's own flow decomposition attributes
+    solar between home/battery (see its docstring); the aggregate
+    `battery_charged`/`grid_imported`/`grid_exported` computed below are
+    invariant to the split.
     """
     current_buy_price = buy_price[period]
     current_sell_price = sell_price[period]
@@ -605,6 +659,7 @@ def _build_period_data(
         grid_exported=grid_exported,
         battery_soe_start=soe,
         battery_soe_end=next_soe,
+        battery_first_priority=battery_first_priority,
     )
 
     energy_stored = max(0.0, next_soe - soe)
@@ -790,6 +845,7 @@ def _run_dynamic_programming(
     currency: str = "SEK",
     max_charge_power_per_period: list[float] | None = None,
     self_throttle_export_threshold_kwh: float = BATTERY_EXPORT_THRESHOLD_KWH,
+    battery_first_priority: bool = False,
 ) -> np.ndarray:
     """
     Run backward induction DP to compute optimal battery control policy.
@@ -870,6 +926,7 @@ def _run_dynamic_programming(
             dt,
             solar_production=solar_production[t],
             home_consumption=home_consumption[t],
+            battery_first_priority=battery_first_priority,
         )
         feasible &= (next_soe >= min_soe_kwh) & (next_soe <= max_soe_kwh)
 
@@ -1055,6 +1112,7 @@ def _best_action_at_continuous_state(
     max_charge_power_per_period: list[float] | None,
     discharge_resolution_kw: float | None = None,
     self_throttle_export_threshold_kwh: float = BATTERY_EXPORT_THRESHOLD_KWH,
+    battery_first_priority: bool = False,
 ) -> tuple[float, float, float, float]:
     """One-step Bellman recompute at a true continuous SoE, using the
     already-known V[t+1, :] (linearly interpolated) as the continuation
@@ -1097,6 +1155,7 @@ def _best_action_at_continuous_state(
             dt,
             solar_production=solar,
             home_consumption=home,
+            battery_first_priority=battery_first_priority,
         )
         # See _soe_floor's docstring (#233): the feasible floor for this
         # candidate is soe itself until real charging crosses back above
@@ -1119,6 +1178,7 @@ def _best_action_at_continuous_state(
             sell_price=sell_price,
             cost_basis=cost_basis,
             self_throttle_export_threshold_kwh=self_throttle_export_threshold_kwh,
+            battery_first_priority=battery_first_priority,
         )
         value = reward + _interpolate_value(V_next, next_soe, battery_settings)
         if value > best_value:
@@ -1190,12 +1250,15 @@ def _create_idle_schedule(
     initial_soe: float,
     battery_settings: BatterySettings,
     dt: float,
+    battery_first_priority: bool = False,
 ) -> OptimizationResult:
     """
     Create an all-IDLE schedule where battery passively charges from excess solar.
 
-    Used as fallback when optimization doesn't meet minimum profit threshold.
-    Excess solar charges the battery up to capacity; only overflow exports to grid.
+    Used as fallback when optimization doesn't meet minimum profit threshold,
+    and as the numerical safety-net baseline compared against the optimized
+    result -- must share the same battery_first_priority physics as the run
+    it's being compared to, or the comparison isn't apples-to-apples.
     """
     period_data_list = []
     current_soe = initial_soe
@@ -1210,6 +1273,7 @@ def _create_idle_schedule(
             dt=dt,
             solar_production=solar_production[t],
             home_consumption=home_consumption[t],
+            battery_first_priority=battery_first_priority,
         )
         passive_stored = next_soe - current_soe
         battery_charged, _ = _idle_battery_flows(
@@ -1235,6 +1299,7 @@ def _create_idle_schedule(
             grid_exported=max(0, energy_balance),
             battery_soe_start=current_soe,
             battery_soe_end=next_soe,
+            battery_first_priority=battery_first_priority,
         )
 
         economic_data = EconomicData.from_energy_data(
@@ -1315,6 +1380,7 @@ def optimize_battery_schedule(
     max_charge_power_per_period: list[float] | None = None,
     discharge_resolution_kw: float | None = None,
     self_throttle_export_threshold_kwh: float | None = None,
+    battery_first_priority: bool = False,
 ) -> OptimizationResult:
     """
     Battery optimization that eliminates dual cost calculation by using
@@ -1323,6 +1389,11 @@ def optimize_battery_schedule(
     Args:
         buy_price: List of electricity buy prices for each period
         sell_price: List of electricity buy prices for each period
+        battery_first_priority: When True, the battery claims solar ahead
+            of home load (instead of only the post-home surplus) during
+            passive/IDLE periods -- see docs/SOFTWARE_DESIGN.md's
+            SOLAR_STORAGE_PRIORITY intent. Sourced from the
+            battery_first_priority sensor, not a settings toggle.
         home_consumption: List of home consumption for each period (kWh)
         battery_settings: Battery configuration and limits
         solar_production: List of solar production for each period (kWh), defaults to 0
@@ -1391,6 +1462,7 @@ def optimize_battery_schedule(
         currency=currency,
         max_charge_power_per_period=max_charge_power_per_period,
         self_throttle_export_threshold_kwh=self_throttle_export_threshold_kwh,
+        battery_first_priority=battery_first_priority,
     )
 
     # Step 2: Reconstruct the optimal path with continuous SoE propagation.
@@ -1428,6 +1500,7 @@ def optimize_battery_schedule(
             max_charge_power_per_period=max_charge_power_per_period,
             discharge_resolution_kw=discharge_resolution_kw,
             self_throttle_export_threshold_kwh=self_throttle_export_threshold_kwh,
+            battery_first_priority=battery_first_priority,
         )
 
         period_data = _build_period_data(
@@ -1443,6 +1516,7 @@ def optimize_battery_schedule(
             solar_production=solar_production[t],
             new_cost_basis=new_cost_basis,
             currency=currency,
+            battery_first_priority=battery_first_priority,
         )
 
         # Shadow price = marginal opportunity value of stored energy (dV/dSoE),
@@ -1522,6 +1596,7 @@ def optimize_battery_schedule(
         initial_soe=initial_soe,
         battery_settings=battery_settings,
         dt=dt,
+        battery_first_priority=battery_first_priority,
     )
     if idle_schedule.economic_summary.battery_solar_cost < total_optimized_cost:
         return idle_schedule

@@ -9,6 +9,7 @@
 export type StrategicIntent =
   | 'GRID_CHARGING'
   | 'SOLAR_STORAGE'
+  | 'SOLAR_STORAGE_PRIORITY'
   | 'LOAD_SUPPORT'
   | 'BATTERY_EXPORT'
   | 'SOLAR_EXPORT'

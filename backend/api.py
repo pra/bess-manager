@@ -1560,6 +1560,7 @@ async def get_inverter_status():
             "charge_power_rate": charge_power_rate,
             "discharge_power_rate": discharge_power_rate,
             "discharge_inhibit_active": controller.get_discharge_inhibit_active(),
+            "battery_first_priority_active": controller.get_battery_first_priority_active(),
             "inverter_platform": inverter_platform,
             "timestamp": datetime.now().isoformat(),
         }

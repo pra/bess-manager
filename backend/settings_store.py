@@ -51,6 +51,7 @@ SHARED_SENSOR_KEYS = frozenset(
         "current_l2",
         "current_l3",
         "discharge_inhibit",
+        "battery_first_priority",
         "weather_entity",
     }
 )
@@ -80,6 +81,7 @@ SHARED_SENSOR_KEYS = frozenset(
         "current_l2",
         "current_l3",
         "discharge_inhibit",
+        "battery_first_priority",
         "weather_entity",
     }
 )

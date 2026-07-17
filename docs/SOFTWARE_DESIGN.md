@@ -317,8 +317,10 @@ The system classifies battery action intent using the battery power action as th
   - **LOAD_SUPPORT**: otherwise (discharge serves home load)
 - **Charging** (power > 0.1 kW):
   - **GRID_CHARGING**: `grid_to_battery > solar_to_battery` (grid is dominant charge source)
+  - **SOLAR_STORAGE_PRIORITY**: `grid_to_home > 0.01 kWh` while charging from solar — only reachable when `battery_first_priority` is active (see below); physically impossible under default physics, where home always has first claim on solar
   - **SOLAR_STORAGE**: otherwise (solar is dominant charge source)
 - **Near-zero power** (fallthrough for passive flows):
+  - **SOLAR_STORAGE_PRIORITY**: `battery_charged > 0.01 kWh` with `grid_to_home > 0.01 kWh` (passive battery-first solar charging)
   - **SOLAR_STORAGE**: `battery_charged > 0.01 kWh` (passive solar charging)
   - **LOAD_SUPPORT**: `battery_discharged > 0.01 kWh` (small residual discharge)
   - **SOLAR_EXPORT**: `grid_exported > 0.01 kWh` and `solar_to_grid > 0.01 kWh` (solar surplus exporting, battery idle)
@@ -332,6 +334,7 @@ The InverterController converts action intents into hardware-specific schedules.
 |---|---|---|---|
 | GRID_CHARGING | battery_first | On | 0% |
 | SOLAR_STORAGE | load_first | Off | 0% |
+| SOLAR_STORAGE_PRIORITY | battery_first | Off | 0% |
 | LOAD_SUPPORT | load_first | Off | action-derived |
 | BATTERY_EXPORT | grid_first | Off | action-derived |
 | SOLAR_EXPORT | load_first | Off | 0% |
@@ -342,6 +345,8 @@ The InverterController converts action intents into hardware-specific schedules.
 **Why SOLAR_EXPORT uses load_first (not grid_first)**: Solar exports naturally in `load_first` when generation exceeds consumption — no special inverter mode is needed. `SOLAR_EXPORT` exists as a distinct intent purely for UI display (distinguishing "solar actively exporting" from "nothing happening"). Using `grid_first` for battery-idle periods would lock the inverter in a mode that prevents the battery from supporting house load during temporary solar deficits.
 
 **Why BATTERY_EXPORT requires grid_first**: The inverter must route battery discharge toward the grid rather than the home. In `load_first`, discharge would serve home load first; only `grid_first` guarantees battery energy reaches the grid.
+
+**SOLAR_STORAGE_PRIORITY — opt-in battery-first solar charging**: This is the one `battery_first` + no-`grid_charge` combination the rationale above otherwise warns against ("battery_first without grid_charge would cause unnecessary grid imports by routing solar to the battery first while the grid serves the home") — here that's the deliberate point, not a bug. It exists for properties where the battery should claim solar ahead of home load (e.g. to guarantee it's full for a later high-price discharge window), accepting that home load draws more from grid in the meantime. It is **never chosen by default** — the DP only produces it when the optional `battery_first_priority` sensor (see Configuration and Settings) reports true for that optimization run. Discharge timing is unaffected: the DP's price-driven backward induction still decides when to use the battery, independent of this sensor.
 
 **Schedule generation**:
 
@@ -374,6 +379,13 @@ All other settings are stored in this file and managed via the settings API. Top
 - **`growatt`**: Inverter device ID and integration settings
 - **`sensors`**: Entity ID mappings for all Home Assistant sensors
 - **`energy_provider`**: Price source selection (Nordpool or Octopus Energy) and area configuration
+
+**Optional sensors** (configured in the `sensors` section, no dedicated settings fields):
+
+- **`discharge_inhibit`**: binary sensor that blocks battery discharge while an EV is charging.
+- **`battery_first_priority`**: binary sensor that switches the DP into `SOLAR_STORAGE_PRIORITY` mode (see Battery Action Intent Detection above) for that optimization run. Intended to be backed by a slow-changing signal — a manually- or automation-flipped `input_boolean`, or a calendar-based template — not consumption or weather readings, so a stochastic load spike can't flip it mid-run. Defaults to inactive (current behavior) when not configured.
+
+**Consumption forecasting for intermittently-occupied properties**: the backward-looking strategies (`ha_statistics`, `influxdb_7d_avg`) assume a fairly repeatable daily pattern, which breaks down for a property with a stable temperature-driven baseload most of the time and occasional stochastic visits (EV charging, oven use). Rather than a new strategy, point the existing `sensor` consumption strategy at a self-authored HA template sensor (e.g. `base_load_seasonal_sensor`) that estimates baseload from an outdoor-temperature/weather entity. The DP's schedule then always plans against baseload-only demand; a visit's actual extra consumption shows up as unplanned grid import in the moment and is absorbed by the next hourly re-optimization, without corrupting the day-ahead forecast for the far more common empty days.
 
 ### Platform Selection
 
