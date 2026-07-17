@@ -277,6 +277,7 @@ const SystemStatusCard: React.FC<SystemStatusCardProps> = ({ className = "", sys
     const intentDisplayNames: Record<string, string> = {
       GRID_CHARGING: 'Charging from Grid',
       SOLAR_STORAGE: 'Storing Solar',
+      SOLAR_STORAGE_PRIORITY: 'Solar to Battery (Priority)',
       LOAD_SUPPORT: 'Powering Home',
       BATTERY_EXPORT: 'Selling to Grid',
       SOLAR_EXPORT: 'Solar Exporting',

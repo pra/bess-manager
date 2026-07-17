@@ -382,6 +382,17 @@ def run_system_health_checks(system_manager):
         )
         all_component_checks.append(discharge_check)
 
+    # 6b. Battery-First Solar Priority — optional, only checked when configured
+    if system_manager._controller.sensors.get("battery_first_priority"):
+        battery_priority_check = perform_health_check(
+            component_name="Battery-First Solar Priority",
+            description="Prioritizes solar charging into the battery over home load",
+            is_required=False,
+            controller=system_manager._controller,
+            all_methods=["get_battery_first_priority_active"],
+        )
+        all_component_checks.append(battery_priority_check)
+
     # 7. Historic data access
     history_checks = check_historical_data_access()
     all_component_checks.extend(history_checks)

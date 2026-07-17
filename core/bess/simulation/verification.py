@@ -19,6 +19,7 @@ def verify_plan_faithfulness(
     initial_soe,
     settings: BatterySettings,
     dt: float,
+    battery_first_priority: bool = False,
 ):
     """Run optimizer -> derive commands -> simulate -> compare. Returns
     (planned_cost, realized_cost, per_period_deltas)."""
@@ -30,6 +31,7 @@ def verify_plan_faithfulness(
         initial_soe=initial_soe,
         battery_settings=settings,
         period_duration_hours=dt,
+        battery_first_priority=battery_first_priority,
     )
     commands = [
         derive_control_command(

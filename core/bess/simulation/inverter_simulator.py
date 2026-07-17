@@ -55,7 +55,7 @@ def _map_rates(
         else:
             charge_rate_pct = 100
         return True, 0, charge_rate_pct
-    if intent in ("SOLAR_STORAGE", "IDLE"):
+    if intent in ("SOLAR_STORAGE", "SOLAR_STORAGE_PRIORITY", "IDLE"):
         return False, 0, 100
     if intent == "SOLAR_EXPORT":
         # #313: charge_rate=0 blocks passive solar->battery charging so solar
@@ -101,11 +101,18 @@ def mode_to_power(
     branch) -- the same distinction the DP's own reward function makes
     between its IDLE and SOLAR_EXPORT-below-max candidates.
     """
-    if command.battery_mode == "battery_first":  # grid charging
-        room = settings.max_soe_kwh - soe
-        rate_kw = settings.max_charge_power_kw * command.charge_rate_pct / 100
-        max_charge_kwh = min(rate_kw * dt, room / settings.efficiency_charge)
-        return max(0.0, max_charge_kwh) / dt
+    if command.battery_mode == "battery_first":
+        if command.grid_charge:  # GRID_CHARGING: grid tops up regardless of solar
+            room = settings.max_soe_kwh - soe
+            rate_kw = settings.max_charge_power_kw * command.charge_rate_pct / 100
+            max_charge_kwh = min(rate_kw * dt, room / settings.efficiency_charge)
+            return max(0.0, max_charge_kwh) / dt
+        # SOLAR_STORAGE_PRIORITY: battery claims solar ahead of home, no grid
+        # top-up -- same "power=0, let _state_transition's IDLE branch
+        # decide" contract as IDLE/SOLAR_STORAGE below, just with
+        # battery_first_priority passed by the caller (simulate()) so IDLE
+        # nets against total solar instead of the post-home surplus.
+        return 0.0
 
     if (
         command.battery_mode == "grid_first"
@@ -159,6 +166,12 @@ def simulate(
     soe = initial_soe
     period_data = []
     for t, cmd in enumerate(commands):
+        # battery_first mode with grid_charge off is exactly
+        # SOLAR_STORAGE_PRIORITY's signature -- the one combination where
+        # the battery's solar claim isn't netted against home first.
+        battery_first_priority = (
+            cmd.battery_mode == "battery_first" and not cmd.grid_charge
+        )
         power = mode_to_power(
             cmd, solar_production[t], home_consumption[t], soe, settings, dt
         )
@@ -176,6 +189,7 @@ def simulate(
                 dt,
                 solar_production=solar_production[t],
                 home_consumption=home_consumption[t],
+                battery_first_priority=battery_first_priority,
             )
         pd = _build_period_data(
             power=power,
@@ -190,6 +204,7 @@ def simulate(
             solar_production=solar_production[t],
             new_cost_basis=settings.cycle_cost_per_kwh,
             currency=currency,
+            battery_first_priority=battery_first_priority,
         )
         period_data.append(pd)
         soe = next_soe

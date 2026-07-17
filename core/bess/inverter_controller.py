@@ -46,6 +46,11 @@ class InverterController(ABC):
             "charge_rate": 100,
             "discharge_rate": 0,
         },
+        "SOLAR_STORAGE_PRIORITY": {
+            "grid_charge": False,
+            "charge_rate": 100,
+            "discharge_rate": 0,
+        },
         "LOAD_SUPPORT": {"grid_charge": False, "charge_rate": 0, "discharge_rate": 100},
         "BATTERY_EXPORT": {
             "grid_charge": False,
@@ -60,6 +65,11 @@ class InverterController(ABC):
     INTENT_TO_MODE: ClassVar[dict[str, str]] = {
         "GRID_CHARGING": "battery_first",
         "SOLAR_STORAGE": "load_first",
+        # Opt-in only (battery_first_priority sensor): battery_first without
+        # grid_charge routes solar into the battery ahead of home load --
+        # the one combination docs/SOFTWARE_DESIGN.md otherwise calls out as
+        # something the DP avoids by default.
+        "SOLAR_STORAGE_PRIORITY": "battery_first",
         "LOAD_SUPPORT": "load_first",
         "BATTERY_EXPORT": "grid_first",
         "SOLAR_EXPORT": "load_first",
@@ -70,6 +80,7 @@ class InverterController(ABC):
     INTENT_DESCRIPTIONS: ClassVar[dict[str, str]] = {
         "GRID_CHARGING": "Storing cheap grid energy for later use",
         "SOLAR_STORAGE": "Storing excess solar energy for evening/night",
+        "SOLAR_STORAGE_PRIORITY": "Prioritizing solar into the battery ahead of home load",
         "LOAD_SUPPORT": "Using battery to support home consumption",
         "BATTERY_EXPORT": "Selling stored energy to grid for profit",
         "SOLAR_EXPORT": "Solar surplus exporting directly to grid",
@@ -188,7 +199,7 @@ class InverterController(ABC):
         """
         if intent == "GRID_CHARGING":
             return True, 0
-        elif intent == "SOLAR_STORAGE":
+        elif intent in ("SOLAR_STORAGE", "SOLAR_STORAGE_PRIORITY"):
             return False, 0
         elif intent in ("LOAD_SUPPORT", "BATTERY_EXPORT"):
             if battery_action_kw < -0.01:

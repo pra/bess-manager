@@ -74,6 +74,11 @@ class EnergyData:
     battery_soe_start: float  # kWh (changed from battery_soc_start)
     battery_soe_end: float  # kWh (changed from battery_soc_end)
 
+    # True when battery-first solar priority mode was active for this period
+    # (see battery_first_priority sensor) -- flips which of home/battery gets
+    # first claim on solar in the flow decomposition below.
+    battery_first_priority: bool = False
+
     # Detailed flows (calculated automatically in __post_init__)
     solar_to_home: float = field(default=0.0, init=False)
     solar_to_battery: float = field(default=0.0, init=False)
@@ -98,14 +103,23 @@ class EnergyData:
         - Ensures detailed flows always sum to measured totals
         """
 
-        # Step 1: Solar allocation (home has highest priority)
-        solar_to_home = min(self.solar_production, self.home_consumption)
-        remaining_solar = self.solar_production - solar_to_home
-        remaining_consumption = self.home_consumption - solar_to_home
+        # Step 1: Solar allocation. Priority order flips under
+        # battery_first_priority: the battery claims solar ahead of home
+        # load instead of the default home-first ordering.
+        if self.battery_first_priority:
+            solar_to_battery = min(self.solar_production, self.battery_charged)
+            remaining_solar = self.solar_production - solar_to_battery
+            solar_to_home = min(remaining_solar, self.home_consumption)
+            remaining_consumption = self.home_consumption - solar_to_home
+            solar_to_grid = max(0, remaining_solar - solar_to_home)
+        else:
+            solar_to_home = min(self.solar_production, self.home_consumption)
+            remaining_solar = self.solar_production - solar_to_home
+            remaining_consumption = self.home_consumption - solar_to_home
 
-        # Solar priority: home first, then battery charging, then grid export
-        solar_to_battery = min(remaining_solar, self.battery_charged)
-        solar_to_grid = max(0, remaining_solar - solar_to_battery)
+            # Solar priority: home first, then battery charging, then grid export
+            solar_to_battery = min(remaining_solar, self.battery_charged)
+            solar_to_grid = max(0, remaining_solar - solar_to_battery)
 
         # Step 2: Battery discharge allocation (home consumption priority)
         battery_to_home = min(self.battery_discharged, remaining_consumption)

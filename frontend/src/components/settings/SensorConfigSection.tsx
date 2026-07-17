@@ -89,6 +89,7 @@ function isIntegrationFound(
   if (id === 'weather') return !!shared['weather_entity'];
   if (id === 'consumption_forecast') return !!shared['48h_avg_grid_import'];
   if (id === 'discharge_inhibit') return !!shared['discharge_inhibit'];
+  if (id === 'battery_first_priority') return !!shared['battery_first_priority'];
   return false;
 }
 

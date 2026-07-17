@@ -252,6 +252,135 @@ sensor:
 > friendly name containing `48h` and `grid import` so BESS still auto-discovers
 > it. This is the cleaner way to do it if you must use `sensor`.
 
+### Optional: Seasonal Battery-First Priority
+
+For properties with a strong seasonal solar pattern (e.g. a mostly-vacant
+cabin), BESS supports an opt-in `battery_first_priority` mode that routes
+solar into the battery ahead of home load, rather than only the leftover
+surplus — see the "Battery Action Intent Detection" section of
+[`SOFTWARE_DESIGN.md`](SOFTWARE_DESIGN.md) for the full rationale. It's
+driven entirely by a sensor you provide; BESS has no calendar/date logic
+of its own, so a stochastic consumption spike (EV charging, oven use)
+can never flip it.
+
+Both sensors below feed into the same two settings fields regardless of
+which method you build them with:
+
+- **Settings → Sensors → Battery-First Solar Priority** →
+  `binary_sensor.battery_first_priority`
+- **Settings → Sensors → Consumption Forecast** →
+  `sensor.base_load_seasonal_sensor` (and set the consumption strategy to
+  `sensor`)
+
+#### Recommended: derive both from a year of production/export/consumption history
+
+If you have (or can pull together) roughly a year of monthly production,
+export, and consumption totals — most inverter portals show this
+(Growatt/SolaX app monthly view), or read it back out of Home Assistant's
+Energy dashboard statistics — this beats both a guessed calendar range
+and a temperature model, for two different reasons:
+
+- **`battery_first_priority`**: flag the months where your *average daily
+  export* (solar produced but not self-consumed or stored) exceeds
+  roughly 2 kWh/day. Those are the months with real solar surplus
+  currently going to the grid instead of the battery — exactly the
+  condition the mode exists to capture. A calendar guess (e.g. "April
+  through October") routinely gets the shoulder months wrong: it's common
+  for early-autumn months to already have most solar self-consumed
+  directly (little surplus left to capture), in which case forcing
+  priority mode there gains nothing and just pushes home load onto grid
+  for no benefit.
+- **`base_load_seasonal_sensor`**: use your actual measured average daily
+  consumption *per month*, converted to average watts, as a 12-value
+  lookup table. This is more robust than `ha_statistics`'s 7-day trailing
+  window (one visit skews an entire week) and more direct than a
+  temperature model (which is itself just a proxy for what your
+  consumption data already tells you outright).
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Battery First Priority"
+        unique_id: battery_first_priority
+        state: >
+          {% set solar_surplus_months = [4, 5, 6, 7, 8] %}
+          {{ now().month in solar_surplus_months }}
+
+  - sensor:
+      - name: "Base Load Seasonal Sensor"
+        unique_id: base_load_seasonal_sensor
+        unit_of_measurement: "W"
+        state: >
+          {% set monthly_avg_w = {
+            1: 2158, 2: 2354, 3: 883, 4: 1517, 5: 1038, 6: 679,
+            7: 800, 8: 863, 9: 725, 10: 925, 11: 1479, 12: 1188
+          } %}
+          {{ monthly_avg_w[now().month] }}
+```
+
+> Both dicts above are an example, not a default — replace them with your
+> own 12 numbers: `solar_surplus_months` = the months where your average
+> daily export exceeds roughly 2 kWh (adjust the threshold if your system
+> size makes that cutoff a poor fit); `monthly_avg_w[month]` = that
+> month's average daily *total* consumption (self-consumption + import,
+> kWh/day) × 1000 / 24, rounded. A single year of data is enough to
+> start — revisit after another year if the shape looks off, since
+> weather varies year to year.
+
+#### Fallback: no historical data yet
+
+Until you've collected enough history, start with a calendar guess and a
+temperature model, then switch to the data-driven version above once you
+have a year behind you.
+
+**Seasonal on/off toggle**, e.g. active April through October:
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Battery First Priority"
+        unique_id: battery_first_priority
+        state: "{{ now().month in [4, 5, 6, 7, 8, 9, 10] }}"
+```
+
+Adjust the month list to your own guess at a solar season. If you'd
+rather not hardcode months at all, replace the template with an
+`input_boolean` you flip manually from the dashboard, or automate with an
+HA automation on fixed dates — BESS only ever reads whatever the entity's
+current state is.
+
+**Projected seasonal base load**, estimated from outdoor temperature
+rather than measured history:
+
+```yaml
+template:
+  - sensor:
+      - name: "Base Load Seasonal Sensor"
+        unique_id: base_load_seasonal_sensor
+        unit_of_measurement: "W"
+        state: >
+          {% set outdoor_temp = state_attr('weather.home', 'temperature') | float(10) %}
+          {% set standby_w = 80 %}
+          {% set heating_reference_temp = 15 %}
+          {% set heating_watts_per_degree = 60 %}
+          {% set heating_deficit = [heating_reference_temp - outdoor_temp, 0] | max %}
+          {{ (standby_w + heating_deficit * heating_watts_per_degree) | round(0) }}
+```
+
+> Replace `weather.home` with your own weather entity. `standby_w`,
+> `heating_reference_temp`, and `heating_watts_per_degree` are
+> placeholders — tune them to your property. A quick way to calibrate:
+> note your actual average grid import (W) on two otherwise-empty days
+> with different outdoor temperatures, then solve for the slope
+> (`heating_watts_per_degree`) and intercept (`standby_w`) between those
+> two points.
+
+Either way, because this sensor only ever estimates baseload, an
+unplanned visit's extra consumption isn't predicted in the day-ahead
+forecast — it shows up as unplanned grid import in the moment and is
+absorbed by the next hourly re-optimization, rather than being baked into
+the schedule for the (far more common) empty days.
+
 ## Step 4: Configure BESS Manager
 
 Battery, pricing, home, and sensor settings are all configured through the **web interface**.
