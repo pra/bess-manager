@@ -1,0 +1,106 @@
+name: Deploy to fork (aarch64)
+
+# One-button deploy of any branch to your HA Green.
+#  Actions -> "Deploy to fork (aarch64)" -> Run workflow -> pick branch (+ optional version).
+# It builds an aarch64 image from that branch, pushes it to this fork's GHCR,
+# and bumps bess_manager/config.yaml `version:` on `main` so HA offers an update.
+# Then on the Green: BESS Manager (fork) -> Update.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or SHA to build & deploy"
+        required: true
+        default: "main"
+      version:
+        description: "Add-on version (blank = auto: 9.8.1-dev.<run number>)"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # bump version on main
+      packages: write   # push image to GHCR
+    steps:
+      - name: Resolve version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=9.8.1-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout build ref
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push aarch64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.19
+            BUILD_VERSION=${{ steps.v.outputs.version }}
+            BUILD_REF=${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}-aarch64:${{ steps.v.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository }}-aarch64:latest
+          cache-from: type=gha,scope=aarch64
+          cache-to: type=gha,mode=max,scope=aarch64
+
+      # Bump the add-on version on `main` (which HA reads) so the store shows an
+      # update. Uses a separate checkout of `main` so the build ref above is
+      # never pushed. GITHUB_TOKEN (contents: write) is persisted by checkout.
+      - name: Bump add-on version on main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          path: _main
+
+      - name: Commit version bump
+        working-directory: _main
+        run: |
+          git config user.name "deploy-bot"
+          git config user.email "deploy-bot@users.noreply.github.com"
+          sed -i -E 's/^version: .*/version: "${{ steps.v.outputs.version }}"/' bess_manager/config.yaml
+          if git diff --quiet; then
+            echo "config.yaml version already ${{ steps.v.outputs.version }} — nothing to commit"
+          else
+            git add bess_manager/config.yaml
+            git commit -m "deploy: bess_manager ${{ steps.v.outputs.version }} (from ${{ github.event.inputs.ref }})"
+            git push
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Deployed ${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Built from: \`${{ github.event.inputs.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ env.REGISTRY }}/${{ github.repository }}-aarch64:${{ steps.v.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "On the Green: **BESS Manager (fork) → ⋮ Rebuild/Reload → Update**." >> "$GITHUB_STEP_SUMMARY"
