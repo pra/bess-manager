@@ -64,7 +64,7 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            BUILD_FROM=ghcr.io/home-assistant/aarch64-base:3.19
+            BUILD_FROM=ghcr.io/home-assistant/aarch64-base-python:3.13-alpine3.22
             BUILD_VERSION=${{ steps.v.outputs.version }}
             BUILD_REF=${{ github.sha }}
           tags: |
