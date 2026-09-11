@@ -1,6 +1,6 @@
 name: "BESS Manager (fork)"
 description: "Battery Energy Storage System optimization and management"
-version: "9.8.1-dev.6"
+version: "9.8.1-dev.7"
 slug: "bess_manager"
 image: "ghcr.io/pra/bess-manager-{arch}"
 init: false
